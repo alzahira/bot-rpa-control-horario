@@ -1,0 +1,765 @@
+{
+  "name": "Control de Horas",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {
+          "download": true
+        }
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -560,
+        16
+      ],
+      "id": "46149398-61f4-48d3-8539-22a114c61e0e",
+      "name": "Telegram Trigger1",
+      "webhookId": "TU_WEBHOOK_ID_AQUI",
+      "credentials": {
+        "telegramApi": {
+          "id": "TU_CREDENTIAL_ID_TELEGRAM",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.message.text }}",
+        "options": {
+          "systemMessage": "=Eres un asistente experto en extracción de datos. Tu tarea es analizar los mensajes de una trabajadora al salir de su turno y clasificar las horas que reporta en su jornada.\n\nINFORMACIÓN DE CONTEXTO TEMPORAL CRÍTICA:\n- La fecha actual del sistema es: {{$now.format('YYYY-MM-DD')}}\n- Hoy es día: {{$now.setLocale('es').format('dddd')}} (Número de día de la semana: {{$now.weekday}}, donde 1=Lunes y 7=Domingo).\n\nREGLAS DE NEGOCIO ESTRICTAS:\n1. Determina la fecha del turno. Si el usuario se refiere a \"Hoy\", utiliza la fecha actual del sistema.\n2. Clasifica las horas según el número de día de la semana que corresponda a esa fecha:\n   - Si el día es de LUNES a SÁBADO (Días del 1 al 6): Las horas reportadas se guardan en \"horas_normales\". El campo \"horas_extra\" debe ser estrictamente 0.\n   - Si el día es DOMINGO (Día 7): El valor de las horas reportadas DEBE REPLICARSE EXACTAMENTE EN AMBOS CAMPOS. Asigna el mismo número tanto a \"horas_normales\" como a \"horas_extra\". (Por ejemplo, si hace 7 horas, \"horas_normales\" será 7 y \"horas_extra\" será 7).\n3. Devuelve ÚNICAMENTE un objeto JSON válido, sin texto adicional, sin formato markdown.\n\nESTRUCTURA DEL JSON REQUERIDA:\n{\n  \"fecha\": \"Fecha en formato YYYY-MM-DD\",\n  \"horas_normales\": 0,\n  \"horas_extra\": 0,\n  \"notas\": \"Resumen de máximo 4 palabras o vacío \\\"\\\"\"\n}\n\nEJEMPLO EN DOMINGO (Día 7):\nUsuario envía un domingo: \"Hoy he echado 7 horas\"\nSALIDA: {\"fecha\": \"2026-06-14\", \"horas_normales\": 7, \"horas_extra\": 7, \"notes\": \"\"}\n\n\"Si el usuario te indica las horas de varios días a la vez, debes devolver obligatoriamente una lista de objetos (Array de JSON), un ítem por cada día mencionado. No agrupes todo en una sola respuesta.\""
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        208,
+        208
+      ],
+      "id": "47942052-afc4-469a-9387-6559c514e151",
+      "name": "AI Agent",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-safeguard-20b",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        208,
+        432
+      ],
+      "id": "44767afe-ae44-4513-a225-edb64a9f19ea",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "TU_CREDENTIAL_ID_GROQ",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Telegram Trigger1').item.json.message.chat.id }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.4,
+      "position": [
+        304,
+        432
+      ],
+      "id": "4fde2f5c-260b-4875-b33b-0d4cf399a976",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "jsCode": "let respuesta = \"\";\n\nif (typeof $json.text === 'string') {\n  respuesta = $json.text;\n} else if ($json.content && $json.content.parts && $json.content.parts[0] && $json.content.parts[0].text) {\n  respuesta = $json.content.parts[0].text;\n} else if ($json.output && typeof $json.output === 'string') {\n  respuesta = $json.output;\n}\n\n// Función interna para moldear el objeto igual que las columnas del Excel\nfunction mapearAExcel(item) {\n  let fechaFormateada = item.fecha;\n  if (fechaFormateada && fechaFormateada.includes('-')) {\n    fechaFormateada = fechaFormateada.split('-').reverse().join('/');\n  }\n  \n  // 🌟 CLAVE: Las llaves se llaman EXACTAMENTE como tus columnas (Mayúsculas)\n  return {\n    \"Fecha\": fechaFormateada || \"\",\n    \"Horas Normales\": item.horas_normales ?? 0,\n    \"Horas Extra\": item.horas_extra ?? 0,\n    \"Notas\": item.notas || \"\"\n  };\n}\n\nif (respuesta) {\n  try {\n    respuesta = respuesta.replace('```json', '').replace('```', '').trim();\n    let datos = JSON.parse(respuesta);\n    \n    let lista = [];\n    if (datos.registro && Array.isArray(datos.registro)) {\n      lista = datos.registro;\n    } else if (Array.isArray(datos)) {\n      lista = datos;\n    } else {\n      lista = [datos];\n    }\n    \n    return lista.map(item => mapearAExcel(item));\n\n  } catch (e) {\n    return [{ \"error\": true, \"motivo\": \"No se pudo parsear el texto de Groq\" }];\n  }\n}\n\nif ($json.registro && Array.isArray($json.registro)) {\n  return $json.registro.map(item => mapearAExcel(item));\n}\n\nreturn $json;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        208
+      ],
+      "id": "19b7cecc-6e46-4a7d-ac47-a9a3ecb05dbe",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $binary.data }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "object",
+                      "operation": "notEmpty",
+                      "singleValue": true
+                    },
+                    "id": "ebda2d24-e556-443e-b44f-a31fbb09ab29"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "55e4a262-d6a7-4459-a726-9f3b5dad6b3f",
+                    "leftValue": "={{ $json.message.text }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEmpty",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "c94aefaf-e9b1-44ff-96dd-6bb98884ffe1",
+                    "leftValue": "={{ true }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -304,
+        0
+      ],
+      "id": "b0cb1298-e4b9-4fe5-a5a7-873736efb235",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-3.1-flash-lite-preview",
+          "mode": "list",
+          "cachedResultName": "models/gemini-3.1-flash-lite-preview"
+        },
+        "text": "Eres un experto en lectura de cuadrantes de turnos de supermercado y extracción de datos estructurados. Analiza la imagen adjunta y extrae las horas de trabajo asignadas a una empleada específica para toda la semana.\n\nVALIDACIÓN CRÍTICA DE LA IMAGEN:\n1. Antes de analizar los datos, verifica rigurosamente si la imagen es un cuadrante de turnos, una tabla de horarios o un documento de planificación laboral.\n2. Si la imagen NO contiene columnas de días, horarios o no tiene estructura de tabla de trabajo (por ejemplo: si es una foto de un paisaje, un selfi, un meme, un objeto o un documento de otro tipo), debes activar el protocolo de error.\n\nREGLAS DE IDENTIFICACIÓN:\n1. Busca la fila que corresponda a la trabajadora. Su nombre puede aparecer escrito de varias formas: \"AVILA GOMEZ\", \"MJ\", \"M.JOSE\", \"MARIA JOSE\", \"AVILA\" o variaciones similares. \n2. Ignora el resto de filas y trabajadores. Céntrate exclusivamente en su fila.\n\nREGLAS DE CÁLCULO Y EXTRACCIÓN:\n1. Mapea las 7 columnas de días (ya vengan nombradas como Lunes-Domingo, o como números de día consecutivos) y asígnalas a los días de la semana en orden.\n2. Si la celda contiene un número total de horas (ej: \"08.00\"), extrae ese valor.\n3. Si la celda contiene un rango de horas (ej: \"6-14:30\"), CALCULA la diferencia de horas en formato decimal (ej: 8.5).\n4. Si la celda indica \"Libre\", \"Descanso\", \"AUS\", \"X\", \"Xx\", o está vacía, el valor debe ser estrictamente 0.\n5. Busca en la cabecera superior las fechas de la semana (ej: \"27/04/2026 - 03/05/2026\" o los números \"15... 21\"). Formatéalo como un texto limpio: \"Del XX al YY\".\n\nSALIDA ESPERADA:\n- Si la imagen ES un cuadrante válido: Devuelve ÚNICAMENTE el objeto JSON requerido abajo, sin bloques de código markdown y sin texto explicativo.\n- Si la imagen NO es un cuadrante o tabla de horarios: NO devuelvas un objeto JSON bajo ninguna circunstancia. Escribe única y exclusivamente la palabra: TEXTO_NO_VALIDO\n\nESTRUCTURA DEL JSON REQUERIDA (Solo si la imagen es válida):\n{\n  \"rango_fecha\": \"Texto con el rango leído (ej: 'Del 27/04 al 03/05' o 'Del 15 al 21')\",\n  \"lunes\": 0,\n  \"martes\": 0,\n  \"miercoles\": 0,\n  \"jueves\": 0,\n  \"viernes\": 0,\n  \"sabado\": 0,\n  \"domingo\": 0\n}",
+        "inputType": "binary",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        192,
+        -96
+      ],
+      "id": "eba3c39f-e2ea-4a78-bf54-a1ce123ce0aa",
+      "name": "Analyze an image",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "TU_CREDENTIAL_ID_GEMINI",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "let respuesta = \"\";\nif (typeof $json.text === 'string') {\n  respuesta = $json.text;\n} else if ($json.content && $json.content.parts && $json.content.parts[0] && $json.content.parts[0].text) {\n  respuesta = $json.content.parts[0].text;\n} else if ($json.parts && $json.parts[0] && $json.parts[0].text) {\n  respuesta = $json.parts[0].text;\n} \n\nif (respuesta) {\n  try {\n    if (respuesta.includes(\"TEXTO_NO_VALIDO\")) {\n      throw new Error(\"Imagen no reconocida como cuadrante\");\n    }\n\n    respuesta = respuesta.replace('```json', '').replace('
+```', '').trim();\n    let datos = JSON.parse(respuesta);\n\n    const dias = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'];\n    let acumuladorTotal = 0;\n    let tieneHoras = false;\n\n    for (let dia of dias) {\n      let horas = datos[dia] || 0;\n      if (horas > 0) tieneHoras = true;\n\n      if (horas > 8) {\n        horas = horas - 0.5;\n      } else if (horas > 6) {\n        horas = horas - 0.25;\n      } \n      datos[dia] = horas;\n      acumuladorTotal += horas; // 🌟 CORREGIDO: Ahora suma 'horas' correctamente\n    }\n\n    if (!tieneHoras && (datos.rango_fecha.includes(\"ej:\") || datos.rango_fecha === \"\")) {\n      throw new Error(\"Cuadrante vacío o falso\");\n    }\n\n    return {\n      \"resultado\": \"ok\", \n      \"Fecha Inicio\": datos.rango_fecha || \"Ver cuadrante\",\n      \"Lunes\": datos.lunes,\n      \"Martes \": datos.martes,      \n      \"Miercoles\": datos.miercoles,\n      \"Jueves\": datos.jueves,\n      \"Viernes \": datos.viernes,    \n      \"Sabado \": datos.sabado,      \n      \"Domingo\": datos.domingo,\n      \"Total horas\": acumuladorTotal\n    };\n\n  } catch (e) {\n    return {\n      \"resultado\": \"error\",\n      \"motivo\": \"La imagen no contiene un cuadrante de turnos válido.\"\n    };\n  }\n}\n\nreturn { \"resultado\": \"error\", \"motivo\": \"Sin respuesta\" };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        -96
+      ],
+      "id": "91a92e49-d3d5-4584-82af-66d73eb43390",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger1').item.json.message.chat.id }}",
+        "text": "=✅ ¡Cuadrante recibido y procesado!  \n📅 Semana:{{ $json['Fecha Inicio'] }}  \n📊 Horas previstas: {{ $('Code in JavaScript1').item.json['Total horas'] }} (descansos aplicados).  \nTodo ha quedado registrado en el Excel. \n¡Buena semana! 🚀",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1040,
+        -32
+      ],
+      "id": "546cabf3-40e6-47c3-a5d5-30ebe1d55569",
+      "name": "Send a text message",
+      "webhookId": "TU_WEBHOOK_ID_AQUI",
+      "credentials": {
+        "telegramApi": {
+          "id": "TU_CREDENTIAL_ID_TELEGRAM",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger1').item.json.message.chat.id }}",
+        "text": "=✍️ ¡Anotado en el registro diario! \n\n📅 He guardado las variaciones de tu turno del día {{ $json.Fecha.split('-').reverse().join('/') }}.\n⏱️ {{ $json['Horas Normales'] }} normales || 🚀 {{ $json['Horas Extra'] }} extra.\n\n¡A descansar! ☕️",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1008,
+        208
+      ],
+      "id": "743e4b2f-2228-4334-b6a9-3bfb2c6505b1",
+      "name": "Send a text message1",
+      "webhookId": "TU_WEBHOOK_ID_AQUI",
+      "credentials": {
+        "telegramApi": {
+          "id": "TU_CREDENTIAL_ID_TELEGRAM",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "a7e64f53-b9aa-4ec5-9f96-0602acceaa60",
+              "leftValue": "={{ $json.resultado }}",
+              "rightValue": "error",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "67a4a0e3-81db-467a-bd55-435884913842",
+              "leftValue": "",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        592,
+        -96
+      ],
+      "id": "381b3d61-2004-44a0-a1a1-e5bfab039330",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger1').item.json.message.chat.id }}",
+        "text": "=Vaya, la IA se ha confundido leyendo los datos de la imagen. \nPor favor, vuelve a subir la foto asegurándote de que se vea nítida.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        -224
+      ],
+      "id": "24b7b0be-ef09-474d-9546-e1a7bb258c29",
+      "name": "Send a text message2",
+      "webhookId": "TU_WEBHOOK_ID_AQUI",
+      "credentials": {
+        "telegramApi": {
+          "id": "TU_CREDENTIAL_ID_TELEGRAM",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger1').item.json.message.chat.id }}",
+        "text": "Formato no soportado. Por ahora solo entiendo texto escrito o fotos de cuadrantes 🤷‍♂️",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -64,
+        336
+      ],
+      "id": "183035e1-941c-49f0-9b0d-21481b73f694",
+      "name": "Send a text message3",
+      "webhookId": "TU_WEBHOOK_ID_AQUI",
+      "credentials": {
+        "telegramApi": {
+          "id": "TU_CREDENTIAL_ID_TELEGRAM",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/TU_ID_DE_GOOGLE_SHEETS/edit",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "ID_DE_LA_HOJA_1",
+          "mode": "list",
+          "cachedResultName": "HORAS ESPERADAS",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/TU_ID_DE_GOOGLE_SHEETS/edit"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Fecha Inicio": "={{ $json.rango_fecha }}",
+            "Lunes": "={{ $json.lunes }}",
+            "Martes ": "={{ $json.martes }}",
+            "Miercoles": "={{ $json.miercoles }}",
+            "Jueves": "={{ $json.jueves }}",
+            "Viernes ": "={{ $json.viernes }}",
+            "Sabado ": "={{ $json.sabado }}",
+            "Domingo": "={{ $json.domingo }}",
+            "Total horas": "={{ $json.total_horas }}"
+          },
+          "matchingColumns": [
+            "Fecha Inicio"
+          ],
+          "schema": [
+            {
+              "id": "Fecha Inicio",
+              "displayName": "Fecha Inicio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lunes",
+              "displayName": "Lunes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Martes ",
+              "displayName": "Martes ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Miercoles",
+              "displayName": "Miercoles",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Jueves",
+              "displayName": "Jueves",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Viernes ",
+              "displayName": "Viernes ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Sabado ",
+              "displayName": "Sabado ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Domingo",
+              "displayName": "Domingo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Total horas",
+              "displayName": "Total horas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        880,
+        -32
+      ],
+      "id": "9f2194bb-416f-4517-bc8d-9e1b996f1288",
+      "name": "Append or update row in sheet",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleApi": {
+          "id": "TU_CREDENTIAL_ID_GOOGLE",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/TU_ID_DE_GOOGLE_SHEETS/edit",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "ID_DE_LA_HOJA_2",
+          "mode": "list",
+          "cachedResultName": "REGISTRO_HORAS",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/TU_ID_DE_GOOGLE_SHEETS/edit"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Notas": "={{ $json.Notas }}",
+            "Fecha": "={{ $json.Fecha }}",
+            "Horas Normales": "={{ $json['Horas Normales'] }}",
+            "Horas Extra": "={{ $json['Horas Extra'] }}"
+          },
+          "matchingColumns": [
+            "Fecha"
+          ],
+          "schema": [
+            {
+              "id": "Fecha",
+              "displayName": "Fecha",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horas Normales",
+              "displayName": "Horas Normales",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horas Extra",
+              "displayName": "Horas Extra",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Notas",
+              "displayName": "Notas",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "output",
+              "displayName": "output",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        800,
+        208
+      ],
+      "id": "2344231c-d5f7-4c19-a019-3abbb1a32e94",
+      "name": "Append or update row in sheet1",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleApi": {
+          "id": "TU_CREDENTIAL_ID_GOOGLE",
+          "name": "Google Service Account account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Analyze an image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a text message3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Analyze an image": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Send a text message2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet1": {
+      "main": [
+        [
+          {
+            "node": "Send a text message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "242ffa9f-6f6f-4020-8daa-2f68b9e545c9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c3793371fc0fb561047d4c2c9dde76ad3e2db3bcf67907f215107ac0653f0f56"
+  },
+  "nodeGroups": [],
+  "id": "SZXSll9h4rH9rfFH",
+  "tags": []
+}
